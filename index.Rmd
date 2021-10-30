@@ -1,0 +1,207 @@
+---
+title: "Johnson&Johnson quarterly earnings - ARIMA"
+output: 
+  html_document:
+    keep_md: yes
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### packages
+```{r, results="hide", warning=FALSE, message=FALSE}
+packages <- c("dplyr", "astsa", "ggfortify", "stats", "fpp2", "tseries", "AICcmodavg", "lmtest", "forecast")
+
+installed_packages <- packages %in% row.names(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed.packages])
+}
+
+lapply(packages, library, character.only = TRUE)
+``` 
+
+### Import JohnsonJohnson (J&J) quarterly earnings time-series
+```{r}
+df <- JohnsonJohnson
+df
+```
+### Plot time series
+```{r}
+tsplot(df)
+```
+
+### Lag-plot
+```{r}
+lag1.plot(df,4)
+```
+### Seasonal plot
+```{r}
+ggmonthplot(df)+
+  ylab("earnings") +
+  ggtitle("Seasonal plot: earnings J&J ")
+```
+### Seasonal plot over the years
+```{r}
+ggseasonplot(df)
+```
+The plots suggest a change in variance over time; an increasing trend; and seasonality.
+
+### Box-Cox transformation to deal with changes in variance
+```{r}
+lambda <- BoxCox.lambda(df)
+print(lambda)
+df <- BoxCox(df, lambda = lambda)
+
+plot.ts(df)
+```
+
+## De-trend and de-seasonalize
+
+### 1) Fourier transform
+```{r}
+fourier.df <- tslm(df ~ trend + fourier(df, K=2))
+summary(fourier.df)
+autoplot(df, series="Data") +
+  autolayer(fitted(fourier.df), series="Fitted") +
+  xlab("Year") + ylab("Earnings") +
+  ggtitle("earnings J&J")
+tsplot(residuals(fourier.df), main = "detrended desasonalized beer data")
+seasonplot(residuals(fourier.df))
+```
+### linear transform trend & season
+```{r}
+fit.df <- tslm(df~ trend + season)
+summary(fit.df)
+```
+### plot adjusted series & residuals
+```{r}
+autoplot(df, series="Data") +
+  autolayer(fitted(fit.df), series="Fitted") +
+  xlab("Year") + ylab("Megalitres") +
+  ggtitle("Quarterly Beer Production")
+tsplot(residuals(fit.df), main = "detrended desasonalized beer data")
+```
+### Compare AIC of both models
+```{r}
+models <- list(fourier.df, fit.df)
+
+#calculate AIC of each model
+AIC_fourier <- AIC(fourier.df)
+AIC_linear <- AIC(fit.df)
+cbind(AIC_fourier, AIC_linear)
+```
+### 3) Loess de-trending
+```{r}
+df.stlper=stl(df, s.window="periodic")
+df.stl=stl(df, s.window=5)
+plot(df.stlper)
+plot(df.stl)
+```
+
+### Inspect the remainder correlation 
+```{r}
+lag1.plot(df,4)
+lag1.plot(df.stl$time.series[,3],4)
+```
+
+### 4) Difference de-trend & de-seasonalize
+```{r}
+#tsplot(diff(df))
+tsplot(diff(diff(df)))
+df <- diff(diff(df), 4)
+```
+
+```{r}
+acf1 <- acf(df)
+pacf1 <- pacf(df)
+```
+
+```{r}
+lag1.plot(df,4)
+```
+Still some correlation remains.
+
+### Dickey-Fuller Test
+```{r}
+adf.test(df)
+```
+Suggests stationarity (p-value <0.05).
+
+
+### Compare with the original ts
+```{r}
+df_original <- JohnsonJohnson
+df_diff <- df
+
+plot.ts(cbind(df_original, df_diff))
+```
+
+---End of the assignment---
+
+### Fit ARIMA model
+```{r}
+#I:2 (d)
+#AR:1 (p)
+#MA:1 (q)
+#ARIMA(pdq) = (1,2,1)
+df <- JohnsonJohnson
+
+fitSARIMA <- Arima(df, order=c(1,2,1), seasonal = list(order = c(1,0,0), period = 4),method="ML", lambda=lambda)
+coeftest(fitSARIMA)
+
+fitARIMA <- Arima(df, order=c(1,2,1), method="ML",lambda=lambda)
+coeftest(fitARIMA)
+
+AIC_SARIMA <- AIC(fitSARIMA)
+AIC_ARIMA <- AIC(fitARIMA)
+cbind(AIC_ARIMA, AIC_SARIMA)
+```
+### check residuals
+```{r}
+tsdisplay(fitSARIMA$residuals)
+qqnorm(fitSARIMA$residuals); qqline(fitSARIMA$residuals) 
+```
+### Plot SARIMA vs df
+```{r}
+plot(df)
+lines(fitted(fitSARIMA), col="red")
+```
+### Ljung Box-test
+```{r}
+Box.test(resid(fitSARIMA),type="Ljung",lag=20,fitdf=1)
+```
+
+### Forecast
+```{r}
+Forecastmodel = forecast(fitSARIMA, h = 10, lambda = lambda, level = c(95)) 
+
+plot(Forecastmodel)
+```
+### train-test split
+```{r}
+train <- head(df, round(length(df) * 0.95))
+h <- length(df) - length(train)
+test <- tail(df, h)
+autoplot(train) + autolayer(test)
+```
+
+### Fit Sarima train-set for predicting next year earnings (4 quarters)
+```{r}
+fitSARIMA <- Arima(train, order=c(1,2,1), seasonal = list(order = c(1,0,0), period = 4),method="ML", lambda=lambda)
+```
+
+### Forecast
+```{r}
+#Forecastmodel = forecast(train, h = 4, lambda = lambda, level = c(95)) 
+
+fitSARIMA %>%
+  forecast(train, h = 4, lambda = lambda, level = c(95)) %>%
+  autoplot() + autolayer(test)
+```
+### Metrics
+```{r}
+arima.test <- Arima(test, model=fitSARIMA)
+accuracy(arima.test)
+```
